@@ -1,0 +1,9 @@
+﻿timestamp,epoch,device_name,kind,vid_pid,level,charging,source,serial
+2026-10-18T22:10:51,1792332651,Redragon / Yunzii 2.4G 键盘接收器（Compx）,keyboard,3554:FA09,100,0,3554:FA09 厂商协议（cmd 0x05 -> event 0x0A）,
+2026-10-18T22:11:16,1792332676,Redragon / Yunzii 2.4G 键盘接收器（Compx）,keyboard,3554:FA09,100,0,3554:FA09 厂商协议（cmd 0x05 -> event 0x0A）,
+2026-10-18T22:11:45,1792332705,Redragon / Yunzii 2.4G 键盘接收器（Compx）,keyboard,3554:FA09,100,0,3554:FA09 厂商协议（cmd 0x05 -> event 0x0A）,
+2026-10-18T22:15:33,1792332933,Redragon / Yunzii 2.4G 键盘接收器（Compx）,keyboard,3554:FA09,100,0,3554:FA09 厂商协议（cmd 0x05 -> event 0x0A）,
+2026-10-18T22:29:01,1792333741,Redragon / Yunzii 2.4G 键盘接收器（Compx）,keyboard,3554:FA09,100,0,3554:FA09 厂商协议（cmd 0x05 -> event 0x0A）,
+2026-10-18T22:29:26,1792333766,Redragon / Yunzii 2.4G 键盘接收器（Compx）,keyboard,3554:FA09,100,0,3554:FA09 厂商协议（cmd 0x05 -> event 0x0A）,
+2026-10-18T22:41:30,1792334490,Redragon / Yunzii 2.4G 键盘接收器（Compx）,keyboard,3554:FA09,100,0,3554:FA09 厂商协议（cmd 0x05 -> event 0x0A）,
+2026-10-18T22:41:32,1792334492,Redragon / Yunzii 2.4G 键盘接收器（Compx）,keyboard,3554:FA09,100,0,3554:FA09 厂商协议（cmd 0x05 -> event 0x0A）,

@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+build/
+release/
+refs/
+.venv/
+settings.json
+app.log
+show.request
+*.log
+.tmp/
+.idea
