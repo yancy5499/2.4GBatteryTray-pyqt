@@ -66,7 +66,7 @@ python src\main.py
 ```powershell
 cd pyqt
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 用示例设备预览界面（不读取 HID）：
@@ -86,24 +86,24 @@ python src\main.py --demo
 
 ## 从源码构建
 
-`build.ps1` 默认使用项目自带的 `.venv\Scripts\python.exe`。如果只想复制一段命令快速构建，
-见 [pyinstaller-build.txt](pyinstaller-build.txt)：
+构建命令、环境准备与 CI 说明见 [BUILD.md](BUILD.md)。在项目根目录运行：
 
 ```powershell
-cd pyqt
-powershell -ExecutionPolicy Bypass -File .\build.ps1
-# 如果 Python 不在默认位置：
-powershell -ExecutionPolicy Bypass -File .\build.ps1 -Python "C:\path\python.exe"
+.\build.bat all --install-deps
 ```
 
-构建使用 PyInstaller 的 `--onedir --windowed`，输出：
+依赖已安装后直接运行 `.\build.bat`；单独构建使用 `.\build.bat exe` 或
+`.\build.bat source`。所有产物存放在已被 Git 忽略的 `release/`：
 
 ```text
-pyqt\release\2.4GBatteryTray\2.4GBatteryTray.exe
-pyqt\release\2.4GBatteryTray-win64.zip
+release/2.4GBatteryTray/2.4GBatteryTray.exe
+release/2.4GBatteryTray-win64.zip
+release/2.4GBatteryTray-source.zip
+release/SHA256SUMS.txt
 ```
 
-便携版不需要安装 Python，保持 exe 与 `_internal` 文件夹在一起即可。
+便携版不需要安装 Python，保持 EXE 与 `_internal` 文件夹在一起即可。
+GitHub Actions 自动执行测试、构建及 EXE 自检，并上传可下载的产物。
 
 ## 源码结构
 
@@ -143,10 +143,9 @@ pyqt/
 ├── tools/
 │   ├── capture.py         # 生成 README 截图
 │   └── make_assets.py     # 生成 app.ico 与托盘图标设计图
-├── build.ps1
-├── pyinstaller-build.txt    # 复制即用的 PyInstaller 快速命令
+├── build.bat               # 本地与 CI 共用构建入口
+├── BUILD.md                # 复制即用的打包和验证命令
 ├── requirements.txt
-├── requirements-dev.txt
 └── README.md
 ```
 
