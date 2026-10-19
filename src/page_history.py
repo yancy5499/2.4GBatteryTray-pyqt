@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
@@ -134,13 +135,14 @@ class HistoryPage(ScrollPage):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._bucket = "hour"
+        self._last_reload = 0.0
         self._data: Optional[history.HistoryData] = None
         self._enabled: Optional[set[str]] = None
         self._filter_keys: tuple[str, ...] = ()
         self.vbox.setSpacing(14)
         self.vbox.addWidget(PageHeader(
             "电量历史",
-            "根据 log/ 中每台设备独立的 CSV，查看电量随时间的变化；"
+            "查看各设备电量随时间的变化，历史记录保留 90 天；"
             "可切换按 1 小时或 1 天聚合。"))
 
         controls = QHBoxLayout()
@@ -226,7 +228,11 @@ class HistoryPage(ScrollPage):
         self._enabled = {history.file_stem(device)}
         self.reload()
 
-    def reload(self) -> None:
+    def reload(self, *, throttled: bool = False) -> None:
+        now = time.monotonic()
+        if throttled and now - self._last_reload < 15:
+            return
+        self._last_reload = now
         self._data = history.load_history(self._bucket)
         self._rebuild_filter_chips()
         self._apply_filter()

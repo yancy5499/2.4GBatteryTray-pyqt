@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Per-device battery history stored as CSV files under ``<data>/log``.
+"""Indexed 90-day battery history under ``<data>/log/history.sqlite3``.
 
-Every successful poll appends one row per device (timestamp, level, ...).
-The history page aggregates those rows into hourly or daily buckets.
+Legacy CSV files are imported in the poller and preserved as archives.
 """
 
 from __future__ import annotations
 
 import csv
 import re
+import sqlite3
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -27,7 +28,7 @@ SERIES_COLORS = (
 )
 
 MAX_SERIES = 8
-_last_written: dict[str, tuple[int, int]] = {}
+RETENTION_DAYS = 90
 
 
 @dataclass
@@ -83,92 +84,85 @@ def file_for(device: DeviceView) -> Path:
     return log_dir() / f"{file_stem(device)}.csv"
 
 
+def _connect(timeout: float = 5) -> sqlite3.Connection:
+    connection = sqlite3.connect(log_dir() / "history.sqlite3", timeout=timeout)
+    try:
+        # Readers can display existing history during a long legacy import.
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA cache_size=-2048")
+        connection.execute("""CREATE TABLE IF NOT EXISTS readings (
+        device TEXT NOT NULL, epoch INTEGER NOT NULL, level INTEGER NOT NULL,
+        name TEXT, kind TEXT, vid_pid TEXT, charging INTEGER, source TEXT,
+        serial TEXT, PRIMARY KEY(device, epoch, level))""")
+        connection.execute("CREATE INDEX IF NOT EXISTS readings_epoch ON readings(epoch)")
+        connection.execute("""CREATE TABLE IF NOT EXISTS imports (
+        path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER)""")
+    except Exception:
+        connection.close()
+        raise
+    return connection
+
+
 def consolidate() -> None:
-    """Merge per-detection / serial-suffixed CSVs into one file per model."""
-    directory = log_dir(create=False)
-    if not directory.is_dir():
-        return
-    groups: dict[str, list[Path]] = {}
-    for path in sorted(directory.glob("*.csv")):
-        parts = path.stem.split("-")
-        if len(parts) < 3:
-            continue
-        canonical = "-".join(parts[:3]) + ".csv"
-        groups.setdefault(canonical, []).append(path)
-    for canonical_name, files in groups.items():
-        if len(files) == 1 and files[0].name == canonical_name:
-            continue
-        canonical = directory / canonical_name
-        merged: dict[tuple[str, str], dict] = {}
-        for path in files:
-            try:
-                with path.open("r", encoding="utf-8-sig", newline="") as fh:
-                    for row in csv.DictReader(fh):
-                        key = (str(row.get("epoch") or row.get("timestamp") or ""),
-                               str(row.get("level") or ""))
-                        merged.setdefault(key, row)
-            except Exception as exc:
-                log(f"history consolidate read failed: {path}: {exc}")
-        if not merged:
-            continue
-        ordered = sorted(
-            merged.values(),
-            key=lambda row: (int(float(row.get("epoch") or 0)),
-                             int(float(row.get("level") or 0))))
-        try:
-            with canonical.open("w", encoding="utf-8-sig", newline="") as fh:
-                writer = csv.DictWriter(fh, fieldnames=HEADER,
-                                        extrasaction="ignore")
-                writer.writeheader()
-                for row in ordered:
-                    writer.writerow({field: row.get(field, "")
-                                     for field in HEADER})
-        except Exception as exc:
-            log(f"history consolidate write failed: {canonical}: {exc}")
-            continue
-        for path in files:
-            if path != canonical:
+    """Stream legacy CSVs into SQLite; retain originals as user archives.
+
+    A transaction per file makes interrupted imports safe to retry. File
+    signatures avoid re-reading unchanged archives on subsequent starts.
+    """
+    try:
+        with closing(_connect()) as db:
+            cutoff = int((datetime.now() - timedelta(days=RETENTION_DAYS)).timestamp())
+            for path in sorted(log_dir().glob("*.csv")):
+                stat = path.stat()
+                signature = (path.name, stat.st_size, stat.st_mtime_ns)
+                if db.execute("SELECT 1 FROM imports WHERE path=? AND size=? AND mtime=?",
+                              signature).fetchone():
+                    continue
+                parts = path.stem.split("-")
+                if len(parts) < 3:
+                    continue
+                key = "-".join(parts[:3])
                 try:
-                    path.unlink()
-                except OSError:
-                    pass
-        log(f"history consolidated {len(files)} file(s) -> {canonical.name}")
+                    with db, path.open("r", encoding="utf-8-sig", newline="") as fh:
+                        for row in csv.DictReader(fh):
+                            epoch = _epoch_of(row)
+                            try:
+                                level = int(float(row.get("level") or ""))
+                            except (ValueError, TypeError, OverflowError):
+                                continue
+                            if epoch < cutoff or not 0 <= level <= 100:
+                                continue
+                            db.execute("INSERT OR IGNORE INTO readings VALUES (?,?,?,?,?,?,?,?,?)",
+                                       (key, epoch, level, row.get("device_name", ""),
+                                        row.get("kind", ""), row.get("vid_pid", ""),
+                                        int(row.get("charging") == "1"),
+                                        row.get("source", ""), row.get("serial", "")))
+                        db.execute("INSERT OR REPLACE INTO imports VALUES (?,?,?)", signature)
+                except Exception as exc:
+                    log(f"history import failed: {path}: {exc}")
+            with db:
+                db.execute("DELETE FROM readings WHERE epoch < ?", (cutoff,))
+    except Exception as exc:
+        log(f"history initialization failed: {exc}")
 
 
 def append_readings(devices: Iterable[DeviceView]) -> None:
-    """Append one row for every device that produced a valid level."""
-    now = datetime.now()
-    stamp = now.isoformat(timespec="seconds")
-    epoch = int(now.timestamp())
-    for device in devices:
-        level = device.level
-        if level is None:
-            continue
-        try:
-            path = file_for(device)
-        except Exception as exc:
-            log(f"history directory failed: {exc}")
-            continue
-        previous = _last_written.get(str(path))
-        if previous == (epoch, level):
-            continue
-        _last_written[str(path)] = (epoch, level)
-        is_new = not path.exists()
-        try:
-            mode = "w" if is_new else "a"
-            encoding = "utf-8-sig" if is_new else "utf-8"
-            with path.open(mode, encoding=encoding, newline="") as fh:
-                writer = csv.writer(fh)
-                if is_new:
-                    writer.writerow(HEADER)
-                writer.writerow([
-                    stamp, epoch, device.name, device.kind, device.vid_pid,
-                    int(level), int(device.charging),
-                    getattr(device.reading, "source", "") or "",
-                    getattr(device, "serial", "") or "",
-                ])
-        except Exception as exc:
-            log(f"history write failed: {path}: {exc}")
+    """Store bounded history; SQLite reuses pages freed by retention cleanup."""
+    now = int(datetime.now().timestamp())
+    try:
+        with closing(_connect()) as db, db:
+            for device in devices:
+                if device.level is None:
+                    continue
+                db.execute("INSERT OR IGNORE INTO readings VALUES (?,?,?,?,?,?,?,?,?)",
+                           (file_stem(device), now, device.level, device.name,
+                            device.kind, device.vid_pid, int(device.charging),
+                            getattr(device.reading, "source", "") or "",
+                            device.serial or ""))
+            db.execute("DELETE FROM readings WHERE epoch < ?",
+                       (now - RETENTION_DAYS * 86400,))
+    except Exception as exc:
+        log(f"history write failed: {exc}")
 
 
 def _bucket_spec(bucket: str) -> tuple[list[datetime], int, str]:
@@ -188,11 +182,11 @@ def _epoch_of(row: dict) -> int:
     raw = row.get("epoch") or ""
     try:
         return int(float(raw))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raw = row.get("timestamp") or ""
         try:
             return int(datetime.fromisoformat(raw).timestamp())
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 0
 
 
@@ -207,63 +201,34 @@ def load_history(bucket: str = "hour") -> HistoryData:
         return data
 
     candidates: list[HistorySeries] = []
-    for path in sorted(directory.glob("*.csv")):
-        sums = [0.0] * len(starts)
-        counts = [0] * len(starts)
-        name = ""
-        kind = ""
-        vid_pid = ""
-        try:
-            with path.open("r", encoding="utf-8-sig", newline="") as fh:
-                for row in csv.DictReader(fh):
-                    epoch = _epoch_of(row)
-                    if epoch < start_epoch or epoch >= end_epoch:
-                        continue
-                    try:
-                        level = int(float(row.get("level") or ""))
-                    except (TypeError, ValueError):
-                        continue
-                    if not 0 <= level <= 100:
-                        continue
-                    index = int((epoch - start_epoch) // step)
-                    if not 0 <= index < len(starts):
-                        continue
-                    sums[index] += level
-                    counts[index] += 1
-                    name = row.get("device_name") or name
-                    kind = row.get("kind") or kind
-                    vid_pid = row.get("vid_pid") or vid_pid
-        except Exception as exc:
-            log(f"history read failed: {path}: {exc}")
-            continue
-        total = sum(counts)
-        if not total:
-            continue
-        points: list[tuple[float, Optional[float]]] = []
-        latest: Optional[int] = None
-        for index, start in enumerate(starts):
-            if counts[index]:
-                value = sums[index] / counts[index]
-                points.append((start.timestamp(), value))
-                latest = int(round(value))
-            else:
-                points.append((start.timestamp(), None))
-        candidates.append(HistorySeries(
-            key=path.stem,
-            name=name or path.stem,
-            kind=kind,
-            vid_pid=vid_pid,
-            color=SERIES_COLORS[0],
-            points=points,
-            latest=latest,
-            count=total,
-        ))
-
-    candidates.sort(key=lambda item: (item.name.lower(), item.vid_pid))
-    if len(candidates) > MAX_SERIES:
-        data.truncated = len(candidates) - MAX_SERIES
-        candidates = candidates[:MAX_SERIES]
-    for index, series in enumerate(candidates):
-        series.color = SERIES_COLORS[index % len(SERIES_COLORS)]
+    try:
+        with closing(_connect(timeout=0.05)) as db:
+            # Aggregate in SQLite so Python only receives at most 30 points
+            # per selected device, regardless of the number of stored polls.
+            total = db.execute("""SELECT COUNT(DISTINCT device) FROM readings
+                WHERE epoch >= ? AND epoch < ?""", (start_epoch, end_epoch)).fetchone()[0]
+            keys = db.execute("""SELECT device, MAX(name), MAX(kind), MAX(vid_pid)
+                FROM readings WHERE epoch >= ? AND epoch < ?
+                GROUP BY device ORDER BY LOWER(MAX(name)), MAX(vid_pid), device LIMIT ?""",
+                              (start_epoch, end_epoch, MAX_SERIES)).fetchall()
+            data.truncated = max(0, total - MAX_SERIES)
+            for key, name, kind, vid_pid in keys:
+                rows = db.execute("""SELECT (epoch - ?) / ?, AVG(level), COUNT(*)
+                    FROM readings WHERE device=? AND epoch >= ? AND epoch < ?
+                    GROUP BY (epoch - ?) / ?""",
+                                  (start_epoch, step, key, start_epoch, end_epoch,
+                                   start_epoch, step)).fetchall()
+                values = {int(index): (value, count) for index, value, count in rows}
+                points = [(start.timestamp(), values.get(index, (None, 0))[0])
+                          for index, start in enumerate(starts)]
+                latest = next((int(round(value)) for _, value in reversed(points)
+                               if value is not None), None)
+                candidates.append(HistorySeries(
+                    key=key, name=name or key, kind=kind, vid_pid=vid_pid,
+                    color=SERIES_COLORS[len(candidates) % len(SERIES_COLORS)],
+                    points=points, latest=latest,
+                    count=sum(count for _, count in values.values())))
+    except Exception as exc:
+        log(f"history read failed: {exc}")
     data.series = candidates
     return data

@@ -13,7 +13,6 @@ from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QShortcut
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QFrame, QHBoxLayout,
                              QMessageBox, QStackedWidget, QVBoxLayout, QWidget)
 
-import history
 import icons
 import settings as settings_module
 import single_instance
@@ -407,7 +406,6 @@ class MainWindow(QWidget):
 
     def start(self) -> None:
         log("window start")
-        history.consolidate()
         if self.start_minimized and self.tray_available:
             pass
         elif self.settings.window_maximized:
@@ -468,8 +466,6 @@ class MainWindow(QWidget):
         if self._quitting:
             return
         self.devices = list(devices)
-        if not self.demo:
-            history.append_readings(self.devices)
         self._apply_devices()
         now = time.strftime("%H:%M:%S")
         self._last_update = now
@@ -490,7 +486,7 @@ class MainWindow(QWidget):
             else f"每 {settings_module.format_interval(self.settings.interval)} 自动扫描")
         self._refresh_tray()
         if self.pages.currentWidget() is self.history_page:
-            self.history_page.reload()
+            self.history_page.reload(throttled=True)
 
     def _refresh_status_text(self) -> None:
         prefix = "演示模式 · " if self.demo else ""

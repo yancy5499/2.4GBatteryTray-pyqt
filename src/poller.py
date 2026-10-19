@@ -16,6 +16,7 @@ import traceback
 from PyQt6.QtCore import QObject, pyqtSignal
 
 import battery
+import history
 from log import log
 from model import DeviceView, view_from_group
 
@@ -65,6 +66,7 @@ class BatteryPoller(QObject):
     # -- loop ---------------------------------------------------------
     def _loop(self) -> None:
         log("poller start")
+        history.consolidate()
         while not self._stop:
             self._wake.clear()
             if not self._skip_read:
@@ -86,6 +88,9 @@ class BatteryPoller(QObject):
         devices: list[DeviceView] = []
         for index, (group, reading) in enumerate(results):
             devices.append(view_from_group(group, reading, index))
+        if self._stop:
+            return
+        history.append_readings(devices)
         log("battery read: " + ", ".join(
             f"{d.vid_pid}={d.percent_text}" for d in devices))
         if not self._stop:

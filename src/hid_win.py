@@ -569,10 +569,12 @@ class HidDevice:
 
     def _cancel_read(self, ov: OVERLAPPED) -> None:
         kernel32.CancelIoEx(self._read_handle, ctypes.byref(ov))
-        kernel32.WaitForSingleObject(self._read_event, 200)
+        # Cancellation is only a request. Keep ov AND the caller's buffer alive
+        # until the driver completes it, even when cancellation takes >200 ms.
+        # This runs on the daemon poller, never on the GUI thread.
         done = wintypes.DWORD(0)
         kernel32.GetOverlappedResult(
-            self._read_handle, ctypes.byref(ov), ctypes.byref(done), False)
+            self._read_handle, ctypes.byref(ov), ctypes.byref(done), True)
 
     def _open_reader(self) -> bool:
         if self._read_handle:
